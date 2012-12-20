@@ -1,0 +1,8 @@
+
+#### <CLIP> ##### 
+
+### Android devices:
+DeviceFs(Nexus\0407)       /media/Nexus7         fuse.DeviceFs(Nexus\0407)      allow_other,rw,user,noauto    0    0
+DeviceFs(Galaxy\040Nexu    /media/GalaxyNexus    fuse.DeviceFs(Galaxy\040Nexu  allow_other,rw,user,noauto    0    0
+
+#### </CLIP> ##### 
