@@ -13,18 +13,11 @@ class OptparseBackup
   def self.parse(args)
     # The options specified on the command line will be collected in *options*.
     # We set default values here.
-    options = OpenStruct.new
-    options.library = []
-    options.inplace = false
-    options.encoding = "utf8"
-    options.transfer_type = :auto
-    options.verbose = false
-
+    
+    options = {}
+   
     opts = OptionParser.new do |opts|
-      opts.banner = "Usage: backup.rb [options]"
-
-      opts.separator ""
-      opts.separator "Specific options:"
+      options[:banner] = "Usage: backup.rb [options]"
 
       # source
       options[:src] = nil
