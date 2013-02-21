@@ -78,14 +78,23 @@ class Backup
     @exclude = exclude
   end
 
-  def create_src_set
-    src_files = Set.new(Dir.glob(@source))
+  def create_src_file_set
+    full_paths = @source + "/**/*"
+    src_files = Set.new(Dir.glob(full_paths))
+  end
+
+  def create_src_dir_set
+    dir_set = @source + "/**/*/"
+    src_dirs = Set.new(Dir.glob(dir_set))
   end
 
 end
 
 foo = Backup.new( options[:src], options[:dst], options[:exc] )
 
-bar = foo.create_src_set
+bar = foo.create_src_file_set
+baz = foo.create_src_dir_set
 
-pp bar
+pp bar 
+pp baz
+
