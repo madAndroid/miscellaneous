@@ -4,6 +4,7 @@ require 'optparse'
 require 'optparse/time'
 require 'ostruct'
 require 'pp'
+require 'set'
 
 class OptparseBackup
 
@@ -32,9 +33,9 @@ class OptparseBackup
       end
 
       # source
-      options[:exclude] = nil
+      options[:exc] = nil
       opts.on('-e', '--exclude glob', 'Any patterns to exclude') do |e|
-        options[:exclude] = e
+        options[:exc] = e
       end
 
       # Boolean switch.
@@ -71,12 +72,20 @@ pp options
 
 class Backup
 
-  def initialize(source, destination, excludes)
+  def initialize(source, destination, exclude)
     @source = source
     @destination = destination
-    @excludes = excludes
+    @exclude = exclude
   end
-  
+
+  def create_src_set
+    src_files = Set.new(Dir.glob(@source))
+  end
+
 end
 
+foo = Backup.new( options[:src], options[:dst], options[:exc] )
 
+bar = foo.create_src_set
+
+pp bar
