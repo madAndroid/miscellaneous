@@ -5,15 +5,11 @@ require 'optparse/time'
 require 'ostruct'
 require 'pp'
 require 'set'
+require 'fileutils'
 
 class OptparseBackup
 
-  #
-  # Return a structure describing the options.
-  #
   def self.parse(args)
-    # The options specified on the command line will be collected in *options*.
-    # We set default values here.
     
     options = {}
    
@@ -63,12 +59,13 @@ class OptparseBackup
 
     opts.parse!(args)
     options
+
   end  # parse()
 
 end  # class OptparseBackup
 
 options = OptparseBackup.parse(ARGV)
-pp options
+
 
 class Backup
 
@@ -78,23 +75,40 @@ class Backup
     @exclude = exclude
   end
 
-  def create_src_file_set
+  ## SRCs
+  def get_src_fileset
     full_paths = @source + "/**/*"
     src_files = Set.new(Dir.glob(full_paths))
+    src_files = src_files.delete_if { |file| File.directory?(file) }
+    src_files = src_files.delete_if { |file| File.symlink?(file) }
   end
 
-  def create_src_dir_set
-    dir_set = @source + "/**/*/"
-    src_dirs = Set.new(Dir.glob(dir_set))
+  ## DSTs
+  def cp_src_to_dst(src_file_set)
+
+    dst_base_dir = @destination.to_s + "/" + Time.now.strftime("%Y-%m-%d-%H%M")
+  
+    if defined? @exclude
+      exc_string = @exclude.to_s
+      final_set = src_file_set.delete_if { |file| file =~ /#{exc_string}/ }
+    else
+      final_set = src_file_set
+    end
+
+    for src in final_set
+      dst_dir = dst_base_dir + File.dirname(src) 
+      FileUtils.mkdir_p(dst_dir)
+      FileUtils.cp(src, dst_dir)
+    end
+
   end
 
 end
 
 foo = Backup.new( options[:src], options[:dst], options[:exc] )
 
-bar = foo.create_src_file_set
-baz = foo.create_src_dir_set
+fset = foo.get_src_fileset
 
-pp bar 
-pp baz
+foo.cp_src_to_dst(fset)
 
+puts foo.inspect
