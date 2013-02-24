@@ -18,7 +18,7 @@ class OptparseBackup
 
       # source
       options[:src] = nil
-      opts.on('-s', '--src [dir]', 'Source directory to backup') do |s|
+      opts.on('-s', '--src [dir(s)]', Array, 'Source directory(s) to backup') do |s|
         options[:src] = s
       end
 
@@ -75,79 +75,108 @@ options = OptparseBackup.parse(ARGV)
 
 class Backup
 
-#  def initialize(source, destination, exclude)
   def initialize(options)
 
-    @source = options[:src]
+    @sources = options[:src]
     @destination = options[:dst]
     @exclude = options[:exc]
     @keep = options[:keep]
 
     @timestamp = Time.now.strftime("%Y-%m-%d-%H%M")
-    @dst_base_dir = @destination.to_s + "/" + @source
-    @dst_instance = @dst_base_dir + "/" + @timestamp
 
   end
+
+  def set_dst_path(src_dir)
+
+    dst_base_dir = @destination.to_s + "/" + src_dir
+    dst_instance = dst_base_dir + "/" + @timestamp
+
+  end
+
 
   ## SRCs
   def get_src_fileset
-    full_paths = @source + "/**/*"
-    src_files = Set.new(Dir.glob(full_paths))
-    src_files = src_files.delete_if { |file| File.directory?(file) }
-    src_files = src_files.delete_if { |file| File.symlink?(file) }
+
+    dir_hash = Hash.new { |s,p| s[p] = [] }
+
+    src_array = @sources
+    
+    src_array.each { |path|
+      full_paths = path + "/**/*"
+      src_files = Dir.glob(full_paths)
+      src_files.delete_if { |file| (File.symlink?(file) || File.directory?(file)) } 
+      src_files.each { |src| dir_hash[path] << src }
+    }    
+   
+    rhash = dir_hash
+
   end
 
+
   ## DSTs
-  def cp_src_to_dst(src_file_set)
+  def cp_src_to_dst(src_dir, src_file_set)
+
+    dst_instance = set_dst_path(src_dir)
 
     if defined? @exclude
       exc_string = @exclude.to_s
-      final_set = src_file_set.delete_if { |file| file =~ /#{exc_string}/ }
+      final_array = src_file_set.delete_if { |file| file =~ /#{exc_string}/ }
     else
-      final_set = src_file_set
+      final_array = src_file_set
     end
 
-    for src in final_set
-      dst_dir = @dst_instance + File.dirname(src) 
+    final_array.each { |src|
+      dst_dir = dst_instance + File.dirname(src) 
       FileUtils.mkdir_p(dst_dir)
       FileUtils.cp(src, dst_dir)
-    end
+    }
 
   end
 
-  def rotate_backups(days_to_keep = @keep.to_i)
+  def rotate_backups(src_dir, days_to_keep = @keep.to_i)
 
-    dst_symlink = @dst_base_dir + "/current"
+    dst_instance = set_dst_path(src_dir)
+
+    dst_base_dir = @destination.to_s + "/" + src_dir
+
+    dst_symlink = dst_base_dir + "/current"
 
     ## remove old 'current' symlink
     if File.symlink?(dst_symlink)  
       FileUtils.rm(dst_symlink)
     end
 
-    FileUtils.ln_sf(@dst_instance, dst_symlink)
+    FileUtils.ln_sf(dst_instance, dst_symlink)
 
     dirs = []
 
-    dirs = Dir.entries(@dst_base_dir)
+    dirs = Dir.entries(dst_base_dir)
 
     dir_array = dirs.delete_if { |file| file =~ /(current)|(\.)|(\.\.)/ }
 
+    puts dir_array
+
     target_dir_to_delete = dir_array.sort[0...-days_to_keep]
 
+    puts target_dir_to_delete
+
     for dir in target_dir_to_delete 
-      FileUtils.remove_dir(@dst_base_dir + "/" + dir)
+      FileUtils.remove_dir(dst_base_dir + "/" + dir)
     end
 
   end
 
 end
 
-foo = Backup.new(options)
-#foo = Backup.new( options[:src], options[:dst], options[:exc] )
+back_it_up = Backup.new(options)
 
-fset = foo.get_src_fileset
+fset_hash = {}
+fset_hash = back_it_up.get_src_fileset
 
-foo.cp_src_to_dst(fset)
+pp fset_hash
 
-foo.rotate_backups
+fset_hash.each { |src_dir, src_file_set|
+  back_it_up.cp_src_to_dst(src_dir, src_file_set)
+  back_it_up.rotate_backups(src_dir)
+}
 
