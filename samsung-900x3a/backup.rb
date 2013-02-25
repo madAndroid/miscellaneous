@@ -88,7 +88,8 @@ class Backup
 
   def set_dst_path(src_dir)
 
-    dst_base_dir = @destination.to_s + "/" + src_dir
+    pretty_src = src_dir.gsub( /\// , '-' ).gsub( /^-/, '')
+    dst_base_dir = @destination.to_s + "/" + pretty_src
     dst_instance = dst_base_dir + "/" + @timestamp
 
   end
