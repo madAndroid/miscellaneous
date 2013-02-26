@@ -6,6 +6,7 @@ require 'ostruct'
 require 'pp'
 require 'set'
 require 'fileutils'
+require 'logger'
 
 class OptparseBackup
 
@@ -30,7 +31,7 @@ class OptparseBackup
 
       # exclusions 
       options[:exc] = nil
-      opts.on('-e', '--exclude glob', 'Any patterns to exclude') do |e|
+      opts.on('-e', '--exclude glob', Array, 'Any patterns to exclude') do |e|
         options[:exc] = e
       end
 
@@ -94,14 +95,15 @@ class Backup
 
   end
 
-
   ## SRCs
   def get_src_fileset
 
+    ## initialize our hash of dirs
     dir_hash = Hash.new { |s,p| s[p] = [] }
 
     src_array = @sources
-    
+
+    ## Build our hash of dirs
     src_array.each { |path|
       full_paths = path + "/**/*"
       src_files = Dir.glob(full_paths)
@@ -109,6 +111,7 @@ class Backup
       src_files.each { |src| dir_hash[path] << src }
     }    
    
+    ## return the hash
     rhash = dir_hash
 
   end
@@ -119,12 +122,16 @@ class Backup
 
     dst_instance = set_dst_path(src_dir)
 
+    ## remove any exclusions from src
     if defined? @exclude
-      exc_string = @exclude.to_s
-      final_array = src_file_set.delete_if { |file| file =~ /#{exc_string}/ }
+      exc_array = @exclude
+      final_array = []
+      exc_array.each { |exc| final_array = src_file_set.delete_if { |file| file =~ /#{exc}/ } }
     else
       final_array = src_file_set
     end
+
+    pp final_array
 
     final_array.each { |src|
       dst_dir = dst_instance + File.dirname(src) 
@@ -138,7 +145,7 @@ class Backup
 
     dst_instance = set_dst_path(src_dir)
 
-    dst_base_dir = @destination.to_s + "/" + src_dir
+    dst_base_dir = @destination.to_s + "/" + src_dir.gsub( /\// , '-' ).gsub( /^-/, '')
 
     dst_symlink = dst_base_dir + "/current"
 
@@ -147,19 +154,15 @@ class Backup
       FileUtils.rm(dst_symlink)
     end
 
+    ## link our new current direcory
     FileUtils.ln_sf(dst_instance, dst_symlink)
 
+    ## Find directories to delete as part of rotation
     dirs = []
-
     dirs = Dir.entries(dst_base_dir)
-
     dir_array = dirs.delete_if { |file| file =~ /(current)|(\.)|(\.\.)/ }
 
-    puts dir_array
-
     target_dir_to_delete = dir_array.sort[0...-days_to_keep]
-
-    puts target_dir_to_delete
 
     for dir in target_dir_to_delete 
       FileUtils.remove_dir(dst_base_dir + "/" + dir)
@@ -173,8 +176,6 @@ back_it_up = Backup.new(options)
 
 fset_hash = {}
 fset_hash = back_it_up.get_src_fileset
-
-pp fset_hash
 
 fset_hash.each { |src_dir, src_file_set|
   back_it_up.cp_src_to_dst(src_dir, src_file_set)
