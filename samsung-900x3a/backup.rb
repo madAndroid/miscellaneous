@@ -47,6 +47,12 @@ class OptparseBackup
         options[:verbose] = v
       end
 
+      # Boolean switch.
+      options[:loglevel] = 'info'
+      opts.on("-l", "--loglevel", "Change Logging level") do |l|
+        options[:loglevel] = l
+      end
+
       opts.separator ""
       opts.separator "Common options:"
 
@@ -85,9 +91,16 @@ class Backup
 
     @timestamp = Time.now.strftime("%Y-%m-%d-%H%M")
 
+    log_dir = @destination + "/backup-log"
+    FileUtils.mkdir_p(log_dir) unless File.exists?(log_dir)
+    @log ||= Logger.new("/" + log_dir + "/" + "backup-#{@timestamp}.log")
+
+
   end
 
   def set_dst_path(src_dir)
+
+    @log.debug "starting backup script - for #{src_dir}"
 
     pretty_src = src_dir.gsub( /\// , '-' ).gsub( /^-/, '')
     dst_base_dir = @destination.to_s + "/" + pretty_src
@@ -122,16 +135,17 @@ class Backup
 
     dst_instance = set_dst_path(src_dir)
 
+    @log.debug "Backing up #{src_dir} to #{dst_instance}"
+
     ## remove any exclusions from src
     if defined? @exclude
+      @log.debug "Excluding #{@exclude} from #{src_dir}"
       exc_array = @exclude
       final_array = []
       exc_array.each { |exc| final_array = src_file_set.delete_if { |file| file =~ /#{exc}/ } }
     else
       final_array = src_file_set
     end
-
-    pp final_array
 
     final_array.each { |src|
       dst_dir = dst_instance + File.dirname(src) 
