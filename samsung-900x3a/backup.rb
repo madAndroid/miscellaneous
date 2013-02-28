@@ -31,8 +31,14 @@ class OptparseBackup
 
       # exclusions 
       options[:exc] = nil
-      opts.on('-e', '--exclude glob', Array, 'Any patterns to exclude') do |e|
+      opts.on('-e', '--exclude [list]', Array, 'Any patterns to exclude') do |e|
         options[:exc] = e
+      end
+
+      # loglevel
+      options[:loglevel] = 'INFO'
+      opts.on("-l", "--loglevel level", 'Change Logging level') do |l|
+        options[:loglevel] = l
       end
 
       # days to keep
@@ -47,11 +53,6 @@ class OptparseBackup
         options[:verbose] = v
       end
 
-      # Boolean switch.
-      options[:loglevel] = 'info'
-      opts.on("-l", "--loglevel", "Change Logging level") do |l|
-        options[:loglevel] = l
-      end
 
       opts.separator ""
       opts.separator "Common options:"
@@ -88,19 +89,42 @@ class Backup
     @destination = options[:dst]
     @exclude = options[:exc]
     @keep = options[:keep]
+    @loglevel = options[:loglevel]
 
     @timestamp = Time.now.strftime("%Y-%m-%d-%H%M")
 
     log_dir = @destination + "/backup-log"
     FileUtils.mkdir_p(log_dir) unless File.exists?(log_dir)
-    @log ||= Logger.new("/" + log_dir + "/" + "backup-#{@timestamp}.log")
+    log_file = File.open("/" + log_dir + "/" + "backup.rb.log", File::WRONLY | File::APPEND | File::CREAT)
 
+    @log ||= Logger.new(log_file, 10, 10240)
+
+    puts @loglevel
+    case @loglevel.to_s
+    when '10','DEBUG'
+      @log.level = Logger::DEBUG
+    when '20','INFO'
+      @log.level = Logger::INFO
+    when '30','WARN'
+      @log.level = Logger::WARN
+    when '40','ERROR'
+      @log.level = Logger::ERROR
+    else
+      @log.fatal("Log level not within range: use range 10 to 40 or DEBUG to ERROR")
+      abort("non-acceptable log level defined... exiting")
+    end
+
+    @log.info ("\n ***** \t Ruby BACKUP script starting \n ***** \n \t AT: #{@timestamp} \n **** ")
+    @log.debug { "***** \t With VARS: #{options}" }
+    @log.debug { "***** \t With SOURCE(s): #{@sources}" }
+    @log.debug { "***** \t With DESTINATION: #{@destination}" }
+    @log.debug { "***** \t With EXCLUSIONS: #{@exclude}" }
 
   end
 
   def set_dst_path(src_dir)
 
-    @log.debug "starting backup script - for #{src_dir}"
+    @log.info "---- \n starting backup script - for #{src_dir} \n ------"
 
     pretty_src = src_dir.gsub( /\// , '-' ).gsub( /^-/, '')
     dst_base_dir = @destination.to_s + "/" + pretty_src
@@ -135,7 +159,7 @@ class Backup
 
     dst_instance = set_dst_path(src_dir)
 
-    @log.debug "Backing up #{src_dir} to #{dst_instance}"
+    @log.info "Backing up #{src_dir} to #{dst_instance} at #{Time.now.strftime("%H:%M:%S")}"
 
     ## remove any exclusions from src
     if defined? @exclude
