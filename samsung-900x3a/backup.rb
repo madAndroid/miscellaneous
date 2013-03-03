@@ -23,6 +23,12 @@ class OptparseBackup
         options[:src] = s
       end
 
+      # source
+      options[:srcs_file] = nil
+      opts.on('-f', '--srcs_file [file_name]', 'File with directories to backup - one per line') do |s|
+        options[:srcs_file] = s
+      end
+
       # destination
       options[:dst] = nil
       opts.on('-d', '--dst dir', 'Destination directory to backup to') do |d|
@@ -53,7 +59,6 @@ class OptparseBackup
         options[:verbose] = v
       end
 
-
       opts.separator ""
       opts.separator "Common options:"
 
@@ -80,16 +85,30 @@ end  # class OptparseBackup
 
 options = OptparseBackup.parse(ARGV)
 
+class MultiIO
+  def initialize(*targets)
+     @targets = targets
+  end
+
+  def write(*args)
+    @targets.each {|t| t.write(*args)}
+  end
+
+  def close
+    @targets.each(&:close)
+  end
+end
 
 class Backup
 
   def initialize(options)
 
-    @sources = options[:src]
+    ## Parse all but source options first:
+    
+    @loglevel = options[:loglevel]
     @destination = options[:dst]
     @exclude = options[:exc]
     @keep = options[:keep]
-    @loglevel = options[:loglevel]
 
     @timestamp = Time.now.strftime("%Y-%m-%d-%H%M")
 
@@ -97,9 +116,14 @@ class Backup
     FileUtils.mkdir_p(log_dir) unless File.exists?(log_dir)
     log_file = File.open("/" + log_dir + "/" + "backup.rb.log", File::WRONLY | File::APPEND | File::CREAT)
 
-    @log ||= Logger.new(log_file, 10, 10240)
+    if options[:verbose]
+      @log ||= Logger.new MultiIO.new(STDOUT,log_file)
+    else
+      @log ||= Logger.new(log_file, 10, 102400)
+    end
 
-    puts @loglevel
+    @log.datetime_format = "%Y-%m-%d %H:%M:%S"
+
     case @loglevel.to_s
     when '10','DEBUG'
       @log.level = Logger::DEBUG
@@ -111,20 +135,45 @@ class Backup
       @log.level = Logger::ERROR
     else
       @log.fatal("Log level not within range: use range 10 to 40 or DEBUG to ERROR")
-      abort("non-acceptable log level defined... exiting")
+      abort("unrecognised log level defined... exiting")
     end
 
-    @log.info ("\n ***** \t Ruby BACKUP script starting \n ***** \n \t AT: #{@timestamp} \n **** ")
-    @log.debug { "***** \t With VARS: #{options}" }
-    @log.debug { "***** \t With SOURCE(s): #{@sources}" }
-    @log.debug { "***** \t With DESTINATION: #{@destination}" }
-    @log.debug { "***** \t With EXCLUSIONS: #{@exclude}" }
+    @log.info (" ***** \t ***** \t **** ")
+    @log.info (" ***** \t Ruby BACKUP script starting ***** \t AT: #{@timestamp} **** ")
+    @log.debug { " ***** \t With VARS: #{options}" }
+    @log.debug { " ***** \t With SOURCE(s): #{@sources}" }
+    @log.debug { " ***** \t With DESTINATION: #{@destination}" }
+    @log.debug { " ***** \t With EXCLUSIONS: #{@exclude}" }
 
+    ## Parse src options:
+
+    if options[:src] and options[:srcs_file]
+      @log.fatal("either src list or srcs_file needs to be defined - cannot use both")
+      abort("Cannot specify both src list and srcs_file.. exiting")
+    end
+
+    if options[:srcs_file]
+      if File.exists?(options[:srcs_file])
+        sources = []
+        File.open(options[:srcs_file], 'r') { |f|
+          f.each_line do |line|
+            sources << line.chomp
+          end
+        }
+      else
+        @log.fatal("Specified srcs_list file does not exist.. exiting")
+        abort("Specified srcs_list file does not exist.. exiting")
+      end
+      @sources = sources
+    else
+      @sources = options[:src]
+    end
+      
   end
 
   def set_dst_path(src_dir)
 
-    @log.info "---- \n starting backup script - for #{src_dir} \n ------"
+    @log.info "---- starting backup for #{src_dir} ------"
 
     pretty_src = src_dir.gsub( /\// , '-' ).gsub( /^-/, '')
     dst_base_dir = @destination.to_s + "/" + pretty_src
@@ -148,6 +197,9 @@ class Backup
       src_files.each { |src| dir_hash[path] << src }
     }    
    
+    @log.debug "---- hash of dirs and paths: ------"
+    @log.debug "---- #{dir_hash} ------"
+
     ## return the hash
     rhash = dir_hash
 
@@ -172,7 +224,11 @@ class Backup
     end
 
     final_array.each { |src|
+
       dst_dir = dst_instance + File.dirname(src) 
+
+      @log.debug "---- Copying #{src} to #{dst_dir} ------"
+
       FileUtils.mkdir_p(dst_dir)
       FileUtils.cp(src, dst_dir)
     }
@@ -192,6 +248,8 @@ class Backup
       FileUtils.rm(dst_symlink)
     end
 
+    @log.debug "---- symlinking #{dst_instance} to #{dst_symlink} ------"
+
     ## link our new current direcory
     FileUtils.ln_sf(dst_instance, dst_symlink)
 
@@ -202,9 +260,31 @@ class Backup
 
     target_dir_to_delete = dir_array.sort[0...-days_to_keep]
 
+    @log.debug "---- keeping #{days_to_keep} of backups ---"
+    @log.debug "---- removing #{target_dir_to_delete} as part of cleanup to ------"
+
     for dir in target_dir_to_delete 
       FileUtils.remove_dir(dst_base_dir + "/" + dir)
     end
+
+  end
+
+  def extras
+
+    ## List gems, and write to file
+    gem_list = []
+    gem_list = `gem list`.split(/\n/)
+
+    pkg_list_dir = @destination + "/package-lists"
+    FileUtils.mkdir_p(pkg_list_dir) unless File.exists?(pkg_list_dir)
+    pp pkg_list_dir
+    gem_list_file = File.open(pkg_list_dir + "/" + "gem_list.txt", File::WRONLY | File::APPEND | File::CREAT)
+    pp gem_list_file
+    gem_list_file.puts("*"*20)
+    gem_list_file.puts("Gem list as of #{@timestamp}")
+    gem_list_file.puts("*"*20)
+    gem_list.each { |g| gem_list_file.puts(g) }
+    gem_list_file.close
 
   end
 
@@ -220,3 +300,4 @@ fset_hash.each { |src_dir, src_file_set|
   back_it_up.rotate_backups(src_dir)
 }
 
+back_it_up.extras
