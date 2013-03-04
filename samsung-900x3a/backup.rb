@@ -53,10 +53,16 @@ class OptparseBackup
         options[:keep] = k
       end
 
-      # Boolean switch.
+      # verbosity boolean switch.
       options[:verbose] = nil
       opts.on("-v", "--[no-]verbose", "Run verbosely") do |v|
         options[:verbose] = v
+      end
+
+      # Boolean switch.
+      options[:pkgs] = nil
+      opts.on("-p", "--[no-]pkgs", "Backup list of packages") do |p|
+        options[:pkgs] = p
       end
 
       opts.separator ""
@@ -110,7 +116,7 @@ class Backup
     @exclude = options[:exc]
     @keep = options[:keep]
 
-    @timestamp = Time.now.strftime("%Y-%m-%d-%H%M")
+    @timestamp = Time.now.strftime("%Y-%m-%d-%H%M-%S")
 
     log_dir = @destination + "/backup-log"
     FileUtils.mkdir_p(log_dir) unless File.exists?(log_dir)
@@ -269,23 +275,52 @@ class Backup
 
   end
 
-  def extras
-
-    ## List gems, and write to file
-    gem_list = []
-    gem_list = `gem list`.split(/\n/)
+  def extras(pkg_tech)
 
     pkg_list_dir = @destination + "/package-lists"
     FileUtils.mkdir_p(pkg_list_dir) unless File.exists?(pkg_list_dir)
-    pp pkg_list_dir
-    gem_list_file = File.open(pkg_list_dir + "/" + "gem_list.txt", File::WRONLY | File::APPEND | File::CREAT)
-    pp gem_list_file
-    gem_list_file.puts("*"*20)
-    gem_list_file.puts("Gem list as of #{@timestamp}")
-    gem_list_file.puts("*"*20)
-    gem_list.each { |g| gem_list_file.puts(g) }
-    gem_list_file.close
 
+    if pkg_tech =~ /gem/
+      pkg_list_cmd = "gem list"
+    else
+      pkg_list_cmd = "dpkg -l"
+    end
+
+    pkg_list = []
+    pkg_list = `#{pkg_list_cmd}`.split(/\n/)
+    pkg_list_fn = pkg_list_dir + "/" + "#{pkg_tech}_list-#{@timestamp}.txt"
+
+    pkg_list_file = File.open(pkg_list_fn, File::WRONLY | File::APPEND | File::CREAT)
+    pkg_list_file.puts("*"*20)
+    pkg_list_file.puts("#{pkg_tech} list as of #{@timestamp}")
+    pkg_list_file.puts("*"*20)
+    pkg_list.each { |g| pkg_list_file.puts(g) }
+
+    pkg_list_file.close
+
+    ## Find files to delete as part of rotation
+    files = []
+    files = Dir.entries(pkg_list_dir).delete_if { |dir| File.directory?(dir) }
+
+    files = files.select { |f| f =~ /#{pkg_tech}/ }
+
+    if files.count >= 3
+      last_file = pkg_list_dir + "/" + files[-2]
+      if FileUtils.compare_file(last_file, pkg_list_fn)
+        files.pop
+        FileUtils.rm(pkg_list_file)
+      end
+    end
+
+    pp files
+    
+    delete_list = files.sort[0...-4]
+
+    for file in delete_list
+      files.delete_if { |f| f =~ /#{file}/ }
+      FileUtils.rm(pkg_list_dir + "/" + file)
+    end
+    
   end
 
 end
@@ -300,4 +335,8 @@ fset_hash.each { |src_dir, src_file_set|
   back_it_up.rotate_backups(src_dir)
 }
 
-back_it_up.extras
+if options.has_key?(:pkgs)
+  back_it_up.extras('dpkg')
+  back_it_up.extras('gem')
+end
+
