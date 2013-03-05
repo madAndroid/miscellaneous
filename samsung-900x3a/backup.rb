@@ -275,9 +275,9 @@ class Backup
 
   end
 
-  def extras(pkg_tech)
+  def extras(pkg_tech, lists_to_keep = @keep.to_i)
 
-    pkg_list_dir = @destination + "/package-lists"
+    pkg_list_dir = @destination + "/package-lists/#{pkg_tech}"
     FileUtils.mkdir_p(pkg_list_dir) unless File.exists?(pkg_list_dir)
 
     if pkg_tech =~ /gem/
@@ -288,37 +288,64 @@ class Backup
 
     pkg_list = []
     pkg_list = `#{pkg_list_cmd}`.split(/\n/)
-    pkg_list_fn = pkg_list_dir + "/" + "#{pkg_tech}_list-#{@timestamp}.txt"
+    pkg_list_file = pkg_list_dir + "/" + "#{pkg_tech}_list-#{@timestamp}.txt"
 
-    pkg_list_file = File.open(pkg_list_fn, File::WRONLY | File::APPEND | File::CREAT)
-    pkg_list_file.puts("*"*20)
-    pkg_list_file.puts("#{pkg_tech} list as of #{@timestamp}")
-    pkg_list_file.puts("*"*20)
-    pkg_list.each { |g| pkg_list_file.puts(g) }
+    tmp_pkg_fn = "/tmp/" + "#{pkg_tech}_list-#{@timestamp}.txt"
+    tmp_pkg_file = File.open(tmp_pkg_fn, File::WRONLY | File::APPEND | File::CREAT)
+    tmp_pkg_file.puts("*"*20)
+    tmp_pkg_file.puts("#{pkg_tech} list")
+    tmp_pkg_file.puts("*"*20)
+    pkg_list.each { |g| tmp_pkg_file.puts(g) }
 
-    pkg_list_file.close
+    tmp_pkg_file.close
+
+    pkg_symlink = pkg_list_dir + "/current"
 
     ## Find files to delete as part of rotation
     files = []
-    files = Dir.entries(pkg_list_dir).delete_if { |dir| File.directory?(dir) }
+    files = Dir.entries(pkg_list_dir).delete_if { |f|  (f =~ /current/ || File.directory?(f)) }
 
-    files = files.select { |f| f =~ /#{pkg_tech}/ }
+    if files.empty?
 
-    if files.count >= 3
-      last_file = pkg_list_dir + "/" + files[-2]
-      if FileUtils.compare_file(last_file, pkg_list_fn)
-        files.pop
-        FileUtils.rm(pkg_list_file)
+      FileUtils.mv tmp_pkg_fn, pkg_list_file
+      @log.debug "---- symlinking #{pkg_list_file} to #{pkg_symlink} ------"
+      ## link our new current file
+      FileUtils.ln_sf(pkg_list_file, pkg_symlink)
+   
+    else
+
+      last_file = pkg_list_dir + "/" + files.sort[-1]
+
+      pp last_file
+      pp tmp_pkg_fn
+
+      if ! FileUtils.compare_file(last_file, tmp_pkg_fn)
+
+        puts "files not the same"
+        FileUtils.mv tmp_pkg_fn, pkg_list_file
+
+        ## remove old 'current' symlink
+        if File.symlink?(pkg_symlink)  
+          FileUtils.rm(pkg_symlink)
+        end
+
+        @log.debug "---- symlinking #{pkg_list_file} to #{pkg_symlink} ------"
+        ## link our new current file
+        FileUtils.ln_sf(pkg_list_file, pkg_symlink)
+
       end
-    end
 
-    pp files
-    
-    delete_list = files.sort[0...-4]
+      if files.count >= 3
 
-    for file in delete_list
-      files.delete_if { |f| f =~ /#{file}/ }
-      FileUtils.rm(pkg_list_dir + "/" + file)
+        delete_list = files.sort[0...-3]
+
+        for file in delete_list
+          target_file = pkg_list_dir + "/" + file
+          FileUtils.rm(target_file) unless File.symlink?(target_file)
+        end
+
+      end
+
     end
     
   end
