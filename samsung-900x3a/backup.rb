@@ -316,12 +316,8 @@ class Backup
 
       last_file = pkg_list_dir + "/" + files.sort[-1]
 
-      pp last_file
-      pp tmp_pkg_fn
-
       if ! FileUtils.compare_file(last_file, tmp_pkg_fn)
 
-        puts "files not the same"
         FileUtils.mv tmp_pkg_fn, pkg_list_file
 
         ## remove old 'current' symlink
@@ -336,14 +332,11 @@ class Backup
       end
 
       if files.count >= 3
-
         delete_list = files.sort[0...-3]
-
         for file in delete_list
           target_file = pkg_list_dir + "/" + file
           FileUtils.rm(target_file) unless File.symlink?(target_file)
         end
-
       end
 
     end
