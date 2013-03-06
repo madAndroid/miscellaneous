@@ -220,11 +220,11 @@ class Backup
     @log.info "Backing up #{src_dir} to #{dst_instance} at #{Time.now.strftime("%H:%M:%S")}"
 
     ## remove any exclusions from src
-    if defined? @exclude
+    exclusions = @exclude
+    if !exclusions.nil?
       @log.debug "Excluding #{@exclude} from #{src_dir}"
-      exc_array = @exclude
       final_array = []
-      exc_array.each { |exc| final_array = src_file_set.delete_if { |file| file =~ /#{exc}/ } }
+      exclusions.each { |exc| final_array = src_file_set.delete_if { |file| file =~ /#{exc}/ } }
     else
       final_array = src_file_set
     end
