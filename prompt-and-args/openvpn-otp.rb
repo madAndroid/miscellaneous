@@ -19,12 +19,6 @@ class OptparseOpenVPN
     opts = OptionParser.new do |opts|
       options[:banner] = "Usage: backup.rb [options]"
 
-      # server
-      options[:server] = nil
-      opts.on('-s', '--server [server]', 'OpenVPN server to connect to') do |u|
-        options[:server] = u
-      end
-
       # username
       options[:username] = nil
       opts.on('-u', '--username [USERNAME]', 'Unix/PAM username') do |u|
@@ -92,18 +86,16 @@ class OptparseOpenVPN
 end  # class OptparseOpenVPN
 
 
-
 class OptpromptOpenVPN
 
   def self.opt_prompt(verbose = false)
+
+    puts "* "*10
+    puts "OpenVPN client connection using YubiKey OTP"
+    puts "* "*10
     
     options = {}
 
-    options[:username] = nil
-
-    # ovpn_server
-    options[:server] = ask("Server: ")
-  
     # username
     options[:username] = ask("Username: ")
 
@@ -126,16 +118,19 @@ class OptpromptOpenVPN
   end  # opt_prompt()
 
   def self.usage
-    puts "\n OpenVPN client via yubikey for 2FA"
+    puts "* "*10
+    puts "\tOpenVPN client via yubikey for 2FA"
     puts "\n options: " 
     puts "\t -i \ --interactive  -- Run interactively... \n\n or alternatively, supply (all mandatory): " 
-    puts "\n\t -s \ --server \t\t\t--- OpenVPN server"
-    puts "\t -u \ --username \t\t--- PAM/Unix username"
+    puts "\n\t -u \ --username \t\t--- PAM/Unix username"
     puts "\t -p \ --password \t\t--- PAM/Unix password"
     puts "\t -o \ --otp \t\t\t--- Yubikey one-time-password"
-    puts "\t -c \ --config \t\t\t--- OpenVPN config file"
+    puts "\t -c \ --config \t\t\t--- OpenVPN config file - contains connection details"
     puts "\n Optional:"
     puts "\n\t -v \ --verbose    -- enable verbose output for debugging"
+    puts "\n" 
+    puts "* "*10
+
   end
 
 end  # class OptpromptOpenVPN
@@ -147,11 +142,12 @@ class OpenVPNwithOTP
 
     ## parse all args
   
-    @server = options[:server]
     @username = options[:username]
     @password = options[:password]
     @otp = options[:otp]
     @config = options[:config]
+
+    @ovpn_binary = `which openvpn`
 
     @timestamp = Time.now.strftime("%Y-%m-%d-%H%M-%S")
 
@@ -163,8 +159,23 @@ class OpenVPNwithOTP
 
     if options[:verbose]
       logger(options[:loglevel])
+      @log_enabled = true
     end
       
+  end
+
+  def check_prereqs
+
+    if @ovpn_binary.empty? or @ovpn_binary.nil?
+      @log.fatal("OpenVPN not installed") if @log_enabled
+      abort("OpenVPN not currently installed ... exiting")
+    end
+
+    if ! File.file?(@config.to_s)
+      @log.fatal("Config file does not exist") if @log_enabled
+      abort("OpenVPN config file does not exist ... exiting")
+    end
+
   end
 
   def logger(level)
@@ -195,6 +206,41 @@ class OpenVPNwithOTP
 
   end
 
+  def connect_vpn
+
+    ovpn_bin = @ovpn_binary.chomp
+    confile = @config
+    passfile = '/tmp/passfile'
+    pidfile = '/tmp/pidfile'
+    logfile = '/tmp/openvpn.log'
+
+    File.open(passfile, 'w') { |f|
+      f.puts @username
+      f.puts @password + @otp
+    }
+
+    ovpn_output = []
+
+    ovpn_output = `#{ovpn_bin} --config #{confile} --auth-user-pass #{passfile} --writepid #{pidfile} --daemon --log #{logfile}`
+
+    pid = $?.pid
+    exit_s = $?.exitstatus
+
+    if exit_s != 0
+      @log.fatal("OpenVPN connection failed") if @log_enabled
+    end
+
+    vpn_log = []
+
+    File.open(logfile, 'r') { |f|
+      f.each_line do |line|
+        @log.fatal(line.chomp) if @log_enabled
+        vpn_log << line.chomp
+      end
+    }
+
+  end
+
 end
 
 if ARGV.count <= 2
@@ -213,3 +259,6 @@ end
 
 openvpn_run = OpenVPNwithOTP.new(options)
 
+openvpn_run.check_prereqs
+
+openvpn_run.connect_vpn
