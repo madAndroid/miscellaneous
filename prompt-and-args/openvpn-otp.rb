@@ -104,7 +104,7 @@ class OptpromptOpenVPN
   def self.opt_prompt(verbose = false)
 
     puts "* "*10
-    puts "OpenVPN client connection using YubiKey OTP"
+    puts "* * OpenVPN client connection using YubiKey OTP"
     puts "* "*10
     
     options = {}
@@ -139,12 +139,12 @@ class OptpromptOpenVPN
   def self.disconnect(verbose = false)
 
     puts "* "*10
-    puts "Disconnect OpenVPN client connection"
+    puts "* * Disconnecting OpenVPN client connection"
     puts "* "*10
     
     options = {}
 
-    # username
+    # set disconnection
     options[:disconnect] = true
 
     if verbose
@@ -164,13 +164,15 @@ class OptpromptOpenVPN
     puts "* "*10
     puts "\tOpenVPN client via yubikey for 2FA"
     puts "\n options: " 
-    puts "\t -i \ --interactive  -- Run interactively... \n\n or alternatively, supply (all mandatory): " 
-    puts "\n\t -u \ --username \t\t--- PAM/Unix username"
-    puts "\t -p \ --password \t\t--- PAM/Unix password"
-    puts "\t -o \ --otp \t\t\t--- Yubikey one-time-password"
-    puts "\t -c \ --config \t\t\t--- OpenVPN config file - contains connection details"
+    puts "\n\t -i | --interactive \t\t --- Run interactively"
+    puts "\t -d | --disconnect \t\t --- Disconnect VPN ... \n\n or alternatively, supply (all mandatory): " 
+    puts "\n\t -u | --username \t\t--- PAM|Unix username"
+    puts "\t -p | --password \t\t--- PAM|Unix password"
+    puts "\t -o | --otp \t\t\t--- Yubikey one-time-password"
+    puts "\t -c | --config \t\t\t--- OpenVPN config file - contains connection details"
     puts "\n Optional:"
-    puts "\n\t -v \ --verbose    -- enable verbose output for debugging"
+    puts "\n\t -v | --verbose \t\t --- enable verbose output for debugging"
+    puts "\t -t | --timeout \t\t --- Set timeout value in seconds - defaults to 60 seconds"
     puts "\n" 
     puts "* "*10
 
@@ -202,16 +204,21 @@ class OpenVPNwithOTP
     if options[:verbose]
       logger(options[:loglevel])
       @log_enabled = true
+    else
+      @log_enabled = false
     end
       
   end
 
   def check_prereqs(options)
 
+    failed_check = false
+
     options.each_pair { |k,v| 
       if v.nil?
         @log.fatal("#{k} is a mandatory option") if @log_enabled
         puts " #{k} is a mandatory option"
+        failed_check = true
       end
     }
 
@@ -219,14 +226,21 @@ class OpenVPNwithOTP
 
       if @ovpn_binary.empty? or @ovpn_binary.nil?
         @log.fatal("OpenVPN not installed") if @log_enabled
-        abort("OpenVPN not currently installed ... exiting")
+        puts "OpenVPN not currently installed ... exiting"
+        failed_check = true
       end
 
       if ! File.file?(@config.to_s)
         @log.fatal("Config file does not exist") if @log_enabled
-        abort("OpenVPN config file does not exist ... exiting")
+        puts "OpenVPN config file does not exist ... exiting"
+        failed_check = true
       end
 
+    end
+
+    if failed_check
+      puts "One or more pre-requisites failed"
+      exit 1
     end
 
   end
@@ -270,7 +284,7 @@ class OpenVPNwithOTP
     interact = @interactive
 
     logsuccess = 'Initialization Sequence Completed'
-    logfailed = '(ECONNREFUSED|EHOSTUNREACH|AUTH_FAILED)'
+    logfailed = '(ECONNREFUSED|EHOSTUNREACH)'
     authfailed = '(AUTH_FAILED)'
 
     File.open(passfile, 'w') { |f|
@@ -305,6 +319,7 @@ class OpenVPNwithOTP
 
         if exit_s != 0
           @log.fatal("OpenVPN connection failed") if @log_enabled
+          exit 1
         end
 
         begin
@@ -350,7 +365,8 @@ class OpenVPNwithOTP
           end # end timeout
 
         rescue Timeout::Error => e
-    
+          
+          @log.error("#{e} Timeout reached") if @log_enabled
           puts "Connection not established within #{timeout} seconds"
           kill_and_clean
 
@@ -423,8 +439,8 @@ class OpenVPNwithOTP
       begin
         Process.getpgid(ovpn_pid)
         kill_and_clean
-      rescue Errno::ESRCH => e
-        puts "Pid file exists, but process not running ... deleting PID file for pid #{e}"
+      rescue Errno::ESRCH
+        puts "Pid file exists, but process not running ... deleting PID file for pid #{ovpn_pid}"
         File.delete(pidfile)
       end
 
@@ -452,22 +468,33 @@ class OpenVPNwithOTP
 
 end
 
+trap("INT") { 
+
+  pp "CTRL-C detected... exiting" 
+  if defined? openvpn_run
+    openvpn_run.kill_and_clean
+    exit
+  else
+    exit
+  end
+
+}
 
 ### Parse commandline args:
 
 if ARGV.count <= 2
 
-  if ARGV.include? '-i' and ARGV.include? '-v'
-    options = OptpromptOpenVPN.opt_prompt(true)
+  if ARGV.include? '-v'
+    verbose = true
+  else
+    verbose = false
+  end
+
+  if ARGV.include? '-i'
+    options = OptpromptOpenVPN.opt_prompt(verbose)
   elsif 
-    ARGV.include? '-i' and ARGV.count <= 1
-    options = OptpromptOpenVPN.opt_prompt
-  elsif
-    ARGV.include? '-d' and ARGV.include? '-v'
-    options = OptpromptOpenVPN.disconnect(true)
-  elsif
-    ARGV.include? '-d' and ARGV.count <= 1
-    options = OptpromptOpenVPN.disconnect
+    ARGV.include? '-d'
+    options = OptpromptOpenVPN.disconnect(verbose)
   else
     options = OptpromptOpenVPN.usage
     exit 0
@@ -480,14 +507,6 @@ end
 ## main class instantiation:
 
 openvpn_run = OpenVPNwithOTP.new(options)
-
-trap("INT") { 
-
-  pp "CTRL-C detected... exiting" 
-  openvpn_run.kill_and_clean
-  exit
-
-}
 
 openvpn_run.check_prereqs(options)
 
