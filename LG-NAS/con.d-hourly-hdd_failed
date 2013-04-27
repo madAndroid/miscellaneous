@@ -1,0 +1,75 @@
+#!/bin/sh
+
+TEMP_MAIL=/tmp/test.eml
+MAILTO=$(nas-system get email_to)
+SUBJECT=$(nas-system get email_subject)
+SMTP_AUTH=$(nas-system get smtp_auth)
+HOSTNAME=$(hostname)
+
+echo "To:$MAILTO" > $TEMP_MAIL
+echo "From:$HOSTNAME Notification System<$MAILTO>" >> $TEMP_MAIL
+echo "Subject:$SUBJECT : LG NAS - Disk Failed??" >> $TEMP_MAIL
+echo "" >> $TEMP_MAIL
+echo "Possible Disk Failure Notification" >> $TEMP_MAIL
+echo "" >> $TEMP_MAIL
+
+# RAID monitor
+#
+BASE_FILE=/etc/mdstat.OK
+DIFF_FILE=/tmp/mddiff$$.out
+#
+# make the comparison template
+#
+if [ ! -s ${BASE_FILE} ]
+then
+   if [ "0" != "`id -u`"]
+   then
+      echo "Must be 'root' to run this script for the first time!"
+      exit 0
+   fi
+   cat /proc/mdstat >${BASE_FILE}
+fi
+#
+# compare current mdstat with saved good version
+#
+cat /proc/mdstat >${DIFF_FILE}
+
+diff ${BASE_FILE} ${DIFF_FILE}
+RETVAL=$?
+
+if [ $RETVAL -ne '0' ]; then
+   echo "Raid problem ??"
+   RAID_ISSUE='true'
+   cat ${DIFF_FILE} >> $TEMP_MAIL
+else
+   echo "Raid OK"
+   RAID_ISSUE='false'
+fi
+
+rm -f ${DIFF_FILE}
+
+if [[ $RAID_ISSUE = "true" ]]; then
+    if [[ "$SMTP_AUTH" = "on" || "$SMTP_AUTH" = "ON" ]]; then
+      SMTP_USER=$(nas-system get smtp_user)
+      SMTP_PASS=$(nas-system get smtp_pass)
+      ssmtp -au$SMTP_USER -ap$SMTP_PASS $MAILTO < $TEMP_MAIL &
+    else
+      ssmtp $MAILTO < $TEMP_MAIL &
+    fi
+else
+    exit 0
+fi
+
+BACKGROUND_PID=$!
+TIMEOUT=120
+while ps -p $BACKGROUND_PID >/dev/null; do
+  TIMEOUT=$(($TIMEOUT - 1))
+  if [ "$TIMEOUT" -lt "0" ]; then
+    break
+  fi
+  sleep 1
+done
+pkill ssmtp
+
+rm $TEMP_MAIL
+

@@ -1,4 +1,4 @@
-#!/usr/bin/ruby
+#!/usr/bin/ruby1.9.1
 
 require 'optparse'
 require 'optparse/time'
@@ -12,14 +12,27 @@ require 'timeout'
 begin
   require "highline/import"
   require "file-tail"
+  require "sys/proctable"
+  include Sys
 rescue LoadError => e
-  raise unless e.message =~ /(highline|file-tail)/
-  puts "file-tail and highline are gem dependencies and must be installed" 
+  raise unless e.message =~ /(highline|file-tail|sys-proctable)/
+  puts "#{e} is a gem dependencies and must be installed" 
+  exit 1
 end
+
+if ! RUBY_VERSION =~ /1.9/
+  puts "This script needs to run under ruby 1.9.x, and you're running under #{RUBY_VERSION}"
+  exit 1
+end
+
+
+##
+### Parse options:
+##
 
 class OptparseOpenVPN
 
-  def self.parse(args)
+  def self.parse(env, args)
     
     options = {}
    
@@ -28,25 +41,25 @@ class OptparseOpenVPN
 
       # username
       options[:username] = nil
-      opts.on('-u', '--username [USERNAME]', 'Unix/PAM username') do |u|
+      opts.on('-u', '--username USERNAME', 'Unix/PAM username') do |u|
         options[:username] = u
       end
 
       # password
       options[:password] = nil
-      opts.on('-p', '--password [PASSWORD]', 'Password for USERNAME') do |p|
+      opts.on('-p', '--password PASSWORD', 'Password for USERNAME') do |p|
         options[:password] = p
       end
 
       # OTP
       options[:otp] = nil
-      opts.on('-o', '--otp [ONETIMEPASSWORD]', 'Onetime password') do |o|
+      opts.on('-o', '--otp ONETIMEPASSWORD', 'Onetime password') do |o|
         options[:otp] = o
       end
 
-      # OTP
-      options[:config] = nil
-      opts.on('-c', '--config [config_file]', 'OpenVPN config file') do |c|
+      # Config file:
+      options[:config] = env
+      opts.on('-c', '--config config_file', 'OpenVPN config file') do |c|
         options[:config] = c
       end
 
@@ -68,7 +81,13 @@ class OptparseOpenVPN
         options[:interactive] = i
       end
 
-      # interactive
+      # disconnect
+      options[:disconnect] = false
+      opts.on("-d", "--[no-]disconnect", "Run disconnectly") do |i|
+        options[:disconnect] = i
+      end
+
+      # timeout:
       options[:timeout] = '60'
       opts.on("-t", "--timeout [seconds]", "Set timeout - defaults to 60 secs") do |t|
         options[:timeout] = t
@@ -98,10 +117,13 @@ class OptparseOpenVPN
 
 end  # class OptparseOpenVPN
 
+##
+### Prompt for options - run interactively
+##
 
 class OptpromptOpenVPN
 
-  def self.opt_prompt(verbose = false)
+  def self.opt_prompt(verbose = false, env, args)
 
     puts "* "*10
     puts "* * OpenVPN client connection using YubiKey OTP"
@@ -110,7 +132,7 @@ class OptpromptOpenVPN
     options = {}
 
     # username
-    options[:username] = ask("Username: ")
+    options[:username] = ask("Username: ") { |q| q.default = Etc.getlogin }
 
     # password
     options[:password] = ask("Password: ") { |q| q.echo = '*' }
@@ -118,8 +140,8 @@ class OptpromptOpenVPN
     # OTP
     options[:otp] = ask("OTP: ") { |q| q.echo = '*' }
 
-    # loglevel
-    options[:config] = ask("Config file path: ")
+    # config file
+    options[:config] = ask("Config file path: ") { |q| q.default = "#{env}" }
 
     # loglevel
     options[:loglevel] = ask("Loglevel: ") { |q| q.default = 'INFO' }
@@ -131,12 +153,19 @@ class OptpromptOpenVPN
 
     options[:interactive] = true
 
+    if args.include? '-d'
+      options[:disconnect] = true
+    end
+
     options
 
   end  # opt_prompt()
 
-
-  def self.disconnect(verbose = false)
+  ##
+  ### Disconnect session:
+  ##
+  
+  def self.disconnect(verbose = false, env, args)
 
     puts "* "*10
     puts "* * Disconnecting OpenVPN client connection"
@@ -147,6 +176,9 @@ class OptpromptOpenVPN
     # set disconnection
     options[:disconnect] = true
 
+    # find config file in ARGV
+    options[:config] = env
+
     if verbose
       options[:verbose] = true
       options[:loglevel] = 'INFO'
@@ -154,16 +186,28 @@ class OptpromptOpenVPN
       options[:loglevel] = 'ERROR'
     end
 
+    if args.include? '-i'
+      options[:interactive] = true
+    else
+      options[:interactive] = false
+    end
+
     options
 
   end  # opt_prompt()
 
+  ##
+  ### Describe usage:
+  ##
 
   def self.usage
 
     puts "* "*10
     puts "\tOpenVPN client via yubikey for 2FA"
-    puts "\n options: " 
+    puts "\n usage : " 
+    puts "\t #{$0} [ENV] (options)" 
+    puts "* "*3
+    puts "\t options : " 
     puts "\n\t -i | --interactive \t\t --- Run interactively"
     puts "\t -d | --disconnect \t\t --- Disconnect VPN ... \n\n or alternatively, supply (all mandatory): " 
     puts "\n\t -u | --username \t\t--- PAM|Unix username"
@@ -180,26 +224,47 @@ class OptpromptOpenVPN
 
 end  # class OptpromptOpenVPN
 
+##
+### MAIN CLASS:
+##
 
 class OpenVPNwithOTP
 
   def initialize(options)
 
     ## set instance vars
+    @timestamp = Time.now.strftime("%Y-%m-%d-%H%M-%S")
   
     @username = options[:username]
     @password = options[:password]
     @otp = options[:otp]
     @config = options[:config]
-    @timeout = options[:timeout]
+    @timeout = options[:timeout].to_i
     @interactive = options[:interactive]
 
-    @ovpn_binary = `which openvpn`
-    @passfile = '/tmp/passfile'
-    @pidfile = '/tmp/pidfile'
-    @logfile = '/tmp/openvpn.log'
+    @script_id = File.basename(@config.to_s)
+    @script_instance = @script_id + "-" + Etc.getlogin
 
-    @timestamp = Time.now.strftime("%Y-%m-%d-%H%M-%S")
+    @workingdir = "/var/tmp/#{@script_instance}"
+
+    FileUtils.mkdir_p(@workingdir) unless File.directory?(@workingdir)
+    File.chmod(0700, @workingdir)
+
+    @sudoperm = "#{@workingdir}/ovpn-sudoperm"
+    @killwrapper = "#{@workingdir}/ovpn-killpid"
+
+    @ovpn_bin = `which openvpn`.chomp
+
+    @passfile = "#{@workingdir}/#{@script_instance}.pass"
+    @pidfile = "#{@workingdir}/#{@script_instance}.pid"
+    @logfile = "#{@workingdir}/#{@script_instance}.log"
+
+    @logsuccess = 'Initialization Sequence Completed'
+    @logfailed = '(ECONNREFUSED|EHOSTUNREACH)'
+    @authfailed = '(AUTH_FAILED)'
+    @inactivitytimeout = '(Inactivity timeout)'
+
+    @myuser = Etc.getlogin
 
     if options[:verbose]
       logger(options[:loglevel])
@@ -207,8 +272,19 @@ class OpenVPNwithOTP
     else
       @log_enabled = false
     end
-      
+
+    File.open(@sudoperm.to_s, 'w') { |f|
+      f.puts "#!/bin/bash"
+      f.puts "sudo chown -R #{@myuser} #{@workingdir}"
+    }
+
+    File.chmod(0700, @sudoperm)
+
   end
+
+  #
+  ### Check prerequisites
+  #
 
   def check_prereqs(options)
 
@@ -224,9 +300,9 @@ class OpenVPNwithOTP
 
     if ! options[:disconnect]
 
-      if @ovpn_binary.empty? or @ovpn_binary.nil?
+      if @ovpn_bin.empty? or @ovpn_bin.nil?
         @log.fatal("OpenVPN not installed") if @log_enabled
-        puts "OpenVPN not currently installed ... exiting"
+        puts "OpenVPN not currently installed, or not in $PATH ... exiting"
         failed_check = true
       end
 
@@ -244,6 +320,10 @@ class OpenVPNwithOTP
     end
 
   end
+
+  ##
+  ### Define Logger:
+  ##
 
   def logger(level)
 
@@ -273,24 +353,23 @@ class OpenVPNwithOTP
 
   end
 
+  ##
+  ### Connect to VPN:
+  ##
+
   def connect_vpn
 
-    ovpn_bin = @ovpn_binary.chomp
-    confile = @config
     passfile = @passfile
-    pidfile = @pidfile
-    logfile = @logfile
-    timeout = @timeout.to_i
-    interact = @interactive
 
-    logsuccess = 'Initialization Sequence Completed'
-    logfailed = '(ECONNREFUSED|EHOSTUNREACH)'
-    authfailed = '(AUTH_FAILED)'
-
-    File.open(passfile, 'w') { |f|
-      f.puts @username
-      f.puts @password + @otp
-    }
+    if RUBY_PLATFORM =~ /darwin/
+      passfile = ''
+    else
+      File.open(passfile, 'w') { |f|
+        f.puts @username
+        f.puts @password + @otp
+      }
+      File.chmod(0600, @passfile)
+    end
 
     puts "* "*10
     puts "* * \t Starting Connection to OpenVPN, using Yubikey 2FA \t * *"
@@ -298,181 +377,307 @@ class OpenVPNwithOTP
 
     vpn_log = []
 
-    if File.exists?(pidfile)
-
-      ovpn_pid = File.read(pidfile).to_i
-      @log.info("an OpenVPN process appears to already be running... with PID: #{ovpn_pid}") if @log_enabled
-      
+    ## find other possible instances of wrapper script running
+  
+    ovpn_pid = get_process_id
+  
+    if ! ovpn_pid.nil?
+      @log.info("Process list shows that an openVPN session, appears to already be running... with PID: #{ovpn_pid}") if @log_enabled
       manage_connection
+      exit 0
+    end
 
-    else
+    if File.exists?(@pidfile)
+      ovpn_pid = File.read(@pidfile).to_i
+      @log.info("an existing pidfile shows an OpenVPN process created by you ... with PID: #{ovpn_pid}") if @log_enabled
+      manage_connection
+    end
+
+    begin
+
+      ## initiate our connection, then grab the exit status and read the pid it creates
+      
+      system("sudo #{@ovpn_bin} --config #{@config} --auth-user-pass #{passfile} --writepid #{@pidfile} --daemon --log #{@logfile}")
+      exit_s = $?.exitstatus
+      if File.exists?(passfile)
+        File.delete(passfile)
+      end
+      if exit_s != 0
+        @log.fatal("OpenVPN connection failed") if @log_enabled
+        exit 1
+      end
+
+      ovpn_pid = get_process_id
+
+      system("sudo #{@sudoperm}")
 
       begin
 
-        ## initiate our connection, then grab the exit status and read the pid it creates
-        
-        `#{ovpn_bin} --config #{confile} --auth-user-pass #{passfile} --writepid #{pidfile} --daemon --log #{logfile}`
+        Timeout.timeout(@timeout) do    # set timeout for connect
+          File.open(@logfile, 'r') do |f|  # open logfile
 
-        exit_s = $?.exitstatus
+            f.extend(File::Tail)
+            f.interval = @timeout
+            f.backward(10)
+            f.tail { |line|
 
-        pid = File.read(pidfile).to_i
+              @log.info(line.chomp) if @log_enabled
+              vpn_log << line.chomp
 
-        if exit_s != 0
-          @log.fatal("OpenVPN connection failed") if @log_enabled
-          exit 1
-        end
+              if line =~ /#{@authfailed}/
+                @log.fatal("Authentication failed!") if @log_enabled
+                puts "* * * \n Authentication with OpenVPN failed! \n * * *"
+                kill_and_clean(ovpn_pid)
+                exit 1
+              end
 
-        begin
-
-          Timeout.timeout(timeout) do    # set timeout for connect
-
-            File.open(logfile, 'r') do |f|  # open logfile
-
-              f.extend(File::Tail)
-              f.interval = timeout
-              f.backward(10)
-              f.tail { |line|
-
-                @log.info(line.chomp) if @log_enabled
-                vpn_log << line.chomp
-
-                if line =~ /#{authfailed}/
-                  @log.fatal("Authentication failed!") if @log_enabled
-                  puts "* * * \n Authentication with OpenVPN failed! \n * * *"
-                  kill_and_clean
-                  return
+              if line =~ /#{@logfailed}/
+                @log.fatal("Connection failed!") if @log_enabled
+                puts "* * * \n connection to OpenVPN failed! \n * * *"
+                if @interactive and ! agree("Retry conection? ", true)
+                  kill_and_clean(ovpn_pid)
+                  exit 1
                 end
+              end
 
-                if line =~ /#{logfailed}/
-                  @log.fatal("Connection failed!") if @log_enabled
-                  puts "* * * \n connection to OpenVPN failed! \n * * *"
-                  if interact and ! agree("Retry conection? ", true)
-                    kill_and_clean
-                    return
-                  end
-                end
+              if line =~ /#{@logsuccess}/
+                @log.info("OpenVPN Connection established") if @log_enabled
+                puts "* * * \n OpenVPN Connection established \n * * *"
+                return
+              end
 
-                if line =~ /#{logsuccess}/
-                  @log.info("OpenVPN Connection established") if @log_enabled
-                  puts "* * * \n OpenVPN Connection established \n * * *"
-                  return
-                end
+            } # end tail
 
-              } # end tail
+          end # end logfile
 
-            end # end logfileS
+        end # end timeout
 
-          end # end timeout
+      rescue Timeout::Error => e
+        @log.error("#{e} Timeout reached") if @log_enabled
+        puts "Connection not established within #{@timeout} seconds"
+        kill_and_clean(ovpn_pid)
+        exit 1
+      end
 
-        rescue Timeout::Error => e
-          
-          @log.error("#{e} Timeout reached") if @log_enabled
-          puts "Connection not established within #{timeout} seconds"
-          kill_and_clean
-
-        end
-
-      end while interact and agree(".. Connection not established, retry conection? ", true)
-
-    end # end if
+    end while @interactive and agree(".. Connection not established, retry conection? ", true)
 
   end
 
+  ##
+  ### Manage connection:
+  ##
 
   def manage_connection
 
-    logfile = @logfile
-    pidfile = @pidfile
-    interact = @interactive
     vpn_log = []
-    logsuccess = 'Initialization Sequence Completed'
 
-    File.open(logfile, 'r') do |f|
-      f.each_line { |line|
-        vpn_log << line.chomp
-      }
-      f.close
+    if File.exists?(@logfile)
+      File.open(@logfile, 'r') { |f| f.each_line { |line| vpn_log << line.chomp } }
     end
 
-    ovpn_pid = File.read(pidfile).to_i
+    if File.exists?(@pidfile)
+      ovpn_pid_from_file = File.read(@pidfile).to_i
+      ovpn_pid = get_process_id
+      if ovpn_pid != ovpn_pid_from_file
+          puts "Pid file contains PID different to currently running process #{ovpn_pid}"
+      end
+    else
+      ovpn_pid = get_process_id
+    end
 
-    begin
+    if ! ovpn_pid.nil?
 
-      Process.getpgid(ovpn_pid)
+      begin
 
-      if vpn_log[-1] =~ /#{logsuccess}/
+        Process.getpgid(ovpn_pid)
+        log_pos = vpn_log.count
+        if log_pos > 10
+          max_pos = 10
+        else
+          max_pos = log_pos.to_i
+        end
+        vpn_log[-max_pos..-1].each { |t|
 
-        puts "OpenVPN connection already established .."
-
-        if interact
-
-          if agree("Stay connected? ", true)
-            puts "Maintaining connection, as requested"
-            return
-          else
-            puts "Killing OpenVPN process with PID: #{ovpn_pid}"
-            kill_and_clean
+          if t =~ /#{@logsuccess}/
+            puts "OpenVPN connection already established .."
+            if @interactive
+              if agree("Stay connected? ", true)
+                puts "Maintaining connection, as requested"
+                return
+              else
+                puts "Killing OpenVPN process with PID: #{ovpn_pid}"
+                kill_and_clean(ovpn_pid)
+                exit 0
+              end
+            end
+            exit 0
           end
 
+          if t =~ /#{@inactivitytimeout}/
+            puts "OpenVPN connection timed-out previously .."
+            if @interactive
+              if agree("Reconnect VPN? ", true)
+                puts "Maintaining connection, as requested"
+              else
+                puts "Cleaning up OpenVPN process with PID: #{ovpn_pid}"
+                kill_and_clean(ovpn_pid)
+                exit 0
+              end
+            end
+          end
+
+        } ## end tail of logarray
+
+      rescue Errno::ESRCH => e
+        puts "Pid file exists, but process not running ... deleting PID file for pid #{e}"
+        if File.exists?(@pidfile)
+          File.delete(@pidfile)
         end
-
       end
+    
+    else
 
-    rescue Errno::ESRCH => e
+      log_pos = vpn_log.count
+      if log_pos > 10
+        max_pos = 10
+      else
+        max_pos = log_pos.to_i
+      end
+      vpn_log[-max_pos..-1].each { |t|
 
-      puts "Pid file exists, but process not running ... deleting PID file for pid #{e}"
-      File.delete(pidfile)
+        if t =~ /#{@inactivitytimeout}/
+          puts "OpenVPN connection timed-out previously .."
+
+          if @interactive
+            if agree("Reconnect VPN? ", true)
+              puts "Reconnecting, as requested"
+            else
+              puts "Not reconnecting .. "
+              exit 0
+            end
+          end
+        end
+      }
 
     end
 
-  end
+  end # end manage connection
 
-  def disconnect(interact = false)
+  ##
+  ### Disconnect VPN
+  ##
 
-    logfile = @logfile
-    pidfile = @pidfile
-    vpn_log = []
+  def disconnect(verbose = false)
 
-    if File.exists?(pidfile)
+    if File.exists?(@pidfile)
 
-      ovpn_pid = File.read(pidfile).to_i
-      begin
-        Process.getpgid(ovpn_pid)
-        kill_and_clean
-      rescue Errno::ESRCH
-        puts "Pid file exists, but process not running ... deleting PID file for pid #{ovpn_pid}"
-        File.delete(pidfile)
+      ovpn_pid_from_file = File.read(@pidfile).to_i
+      ovpn_pid = get_process_id
+      if ovpn_pid != ovpn_pid_from_file
+        puts "Pid file contains PID different to currently running process #{ovpn_pid}"
+        ovpn_pid = ovpn_pid_from_file
       end
 
     else
-      puts "No pidfile exists - check process list to see if OpenVPN running"
+      ovpn_pid = get_process_id
+    end
+
+    if ! ovpn_pid.nil?
+      begin
+        Process.getpgid(ovpn_pid)
+        if @interactive
+          if agree("Disconnect VPN? ", true)
+            kill_and_clean(ovpn_pid)
+            exit 0
+          end
+        else
+          kill_and_clean(ovpn_pid)
+          exit 0
+        end
+      rescue Errno::ESRCH => e
+        puts "#{ovpn_pid} PROCESS does not exist ... #{e}"
+        if File.exists?(@pidfile)
+          File.delete(@pidfile)
+        end
+        exit 1
+      end
+    else
+      puts "No OpenVPN process appears to be running"
+      exit 0
     end
 
   end
 
-  def kill_and_clean
+  ##
+  ### Kill and Clean
+  ##
 
-    interact = @interactive
-    pidfile = @pidfile
+  def kill_and_clean(ovpn_pid)
 
-    ovpn_pid = File.read(pidfile).to_i
+    File.open(@killwrapper, 'w') { |f|
+      f.puts "#!/bin/bash"
+      f.puts "sudo kill #{ovpn_pid}"
+    }
+    File.chmod(0700, @killwrapper)
 
     begin
-      Process.kill('SIGTERM', ovpn_pid)
-      File.delete(pidfile)
+      if Process.getpgid(ovpn_pid)
+        system("sudo #{@killwrapper}")
+        exit_s = $?.exitstatus
+        if exit_s != 0
+          @log.fatal("Failed to disconnect VPN") if @log_enabled
+          exit 1
+        else 
+          @log.info("OpenVPN process with PID: #{ovpn_pid} disconnected") if @log_enabled
+        end
+      end
     rescue Errno::ESRCH 
-      puts "could not kill process"
+      puts "No Process to kill"
     end
+
+    File.delete(@pidfile) if File.exists?(@pidfile)
+    File.delete(@passfile) if File.exists?(@passfile)
+    File.delete(@killwrapper) if File.exists?(@killwrapper)
+    File.delete(@sudoperm) if File.exists?(@sudoperm)
 
   end
 
-end
+  ##
+  ### Get Process ID:
+  ##
+
+  def get_process_id
+
+    pid_array = []
+    ProcTable.ps{ |p|
+      pid_array << p.pid if p.comm == "openvpn" and p.cmdline =~ /#{@config}/
+    }
+    if pid_array.empty?
+      @log.info("no OpenVPN process appears to be running") if @log_enabled
+    else
+      if pid_array.count.to_s == "1"
+        ovpn_pid = pid_array[0]
+      else
+        puts "There appears to be more than one OpenVPN process running, for config file #{@config}!"
+        puts "Check process lists and remove extra processes manually"
+        exit 1
+      end
+    end
+
+    ovpn_pid
+
+  end
+
+end ## - END MAIN CLASS
+
+### Catch break
 
 trap("INT") { 
 
   pp "CTRL-C detected... exiting" 
-  if defined? openvpn_run
-    openvpn_run.kill_and_clean
+  if defined? openvpn_instance
+    ovpn_pid = openvpn_instance.get_process_id
+    openvpn_instance.kill_and_clean(ovpn_pid)
     exit
   else
     exit
@@ -480,9 +685,27 @@ trap("INT") {
 
 }
 
+##
 ### Parse commandline args:
+##
 
-if ARGV.count <= 2
+env = ARGV.shift
+
+if ! env.nil? and env.length < 3 
+  OptpromptOpenVPN.usage
+  exit 1
+end 
+
+if env =~ /(admin|prod|pre|test)/
+  env = Dir.pwd + "/config/" + Etc.getlogin + "-#{env}" + ".ovpn"
+else
+  puts "* "*10
+  puts "ENV needs to be admin|prod|pre|test"
+  puts "* "*10
+  exit 1
+end
+
+if ARGV.count <= 4
 
   if ARGV.include? '-v'
     verbose = true
@@ -490,29 +713,32 @@ if ARGV.count <= 2
     verbose = false
   end
 
-  if ARGV.include? '-i'
-    options = OptpromptOpenVPN.opt_prompt(verbose)
-  elsif 
-    ARGV.include? '-d'
-    options = OptpromptOpenVPN.disconnect(verbose)
+  if ! ARGV.include? '-d'
+    options = OptpromptOpenVPN.opt_prompt(verbose, env, ARGV)
+  elsif ARGV.include? '-d'
+    options = OptpromptOpenVPN.disconnect(verbose, env, ARGV)
   else
     options = OptpromptOpenVPN.usage
     exit 0
   end
 
 else
-  options = OptparseOpenVPN.parse(ARGV)
+  options = OptparseOpenVPN.parse(env, ARGV)
 end
 
+
+##
 ## main class instantiation:
+##
 
-openvpn_run = OpenVPNwithOTP.new(options)
+openvpn_instance = OpenVPNwithOTP.new(options)
 
-openvpn_run.check_prereqs(options)
+openvpn_instance.check_prereqs(options)
 
 if options[:disconnect]
-  openvpn_run.disconnect(options[:verbose])
+  openvpn_instance.disconnect(options[:verbose])
 else
-  openvpn_run.connect_vpn
+  openvpn_instance.connect_vpn
 end
 
+#### END
