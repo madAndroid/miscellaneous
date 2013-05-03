@@ -343,6 +343,18 @@ class Backup
     
   end
 
+  def wrap_it_up
+
+    timestamp = Time.now.strftime("%Y-%m-%d-%H%M-%S")
+
+    @log.info (" \n ***** \t **** ")
+    @log.info (" ***** \t ***** \t **** ")
+    @log.info (" ***** \t Ruby BACKUP script finished ***** \t AT: #{timestamp} **** ")
+    @log.info (" ***** \t ***** \t **** ")
+    @log.info (" \n ***** \t **** ")
+
+  end
+
 end
 
 back_it_up = Backup.new(options)
@@ -359,4 +371,6 @@ if options.has_key?(:pkgs)
   back_it_up.extras('dpkg')
   back_it_up.extras('gem')
 end
+
+back_it_up.wrap_it_up
 
