@@ -266,8 +266,8 @@ class Backup
 
     target_dir_to_delete = dir_array.sort[0...-days_to_keep]
 
-    @log.debug "---- keeping #{days_to_keep} of backups ---"
-    @log.debug "---- removing #{target_dir_to_delete} as part of cleanup to ------"
+    @log.debug "---- keeping #{days_to_keep} of backups ----"
+    @log.debug "---- removing #{target_dir_to_delete} as part of cleanup ----"
 
     for dir in target_dir_to_delete 
       FileUtils.remove_dir(dst_base_dir + "/" + dir)
@@ -276,6 +276,10 @@ class Backup
   end
 
   def extras(pkg_tech, lists_to_keep = @keep.to_i)
+
+    timestamp = Time.now.strftime("%Y-%m-%d-%H%M-%S")
+
+    @log.info "---- Backing up package lists for #{pkg_tech} at #{timestamp} ------"
 
     pkg_list_dir = @destination + "/package-lists/#{pkg_tech}"
     FileUtils.mkdir_p(pkg_list_dir) unless File.exists?(pkg_list_dir)
@@ -340,6 +344,8 @@ class Backup
       end
 
     end
+
+    @log.info "---- Done Backing up package lists for #{pkg_tech} at #{timestamp} ------"
     
   end
 
